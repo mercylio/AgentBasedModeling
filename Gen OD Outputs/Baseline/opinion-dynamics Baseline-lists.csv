@@ -1,0 +1,7 @@
+"BehaviorSpace results (NetLogo 6.4.0)","Lists version 2.0"
+"opinion-dynamics.nlogo"
+"Baseline"
+"07/17/2025 15:37:04:212 +0100"
+"min-pxcor","max-pxcor","min-pycor","max-pycor"
+"-16","16","-16","16"
+"[reporter]","[run number]","mem-increment","corruption?","trust-gap-break","corruption-cycle-trust","opinion-drift?","corruption-penalty","media-shock-trust","corruption-active?","opinion-similarity","media-shock?","trust-gap-form","[step]"

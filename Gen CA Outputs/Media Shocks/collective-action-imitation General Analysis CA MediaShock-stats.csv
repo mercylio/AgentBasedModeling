@@ -1,0 +1,7 @@
+"BehaviorSpace results (NetLogo 6.4.0)","Stats version 2.0"
+"collective-action-imitation.nlogo"
+"General Analysis CA MediaShock"
+"07/17/2025 14:00:55:011 +0100"
+"min-pxcor","max-pxcor","min-pycor","max-pycor"
+"-16","16","-16","16"
+"media-shock?","media-shock-freq","[step]","(mean) total-enrolled","(std) total-enrolled","(mean) total-resisted","(std) total-resisted","(mean) total-undecided","(std) total-undecided","(mean) enrolled-urban","(std) enrolled-urban","(mean) enrolled-rural","(std) enrolled-rural","(mean) resisted-urban","(std) resisted-urban","(mean) resisted-rural","(std) resisted-rural","(mean) avg-trust","(std) avg-trust","(mean) avg-digital-literacy","(std) avg-digital-literacy","(mean) avg-rural-literacy","(std) avg-rural-literacy"

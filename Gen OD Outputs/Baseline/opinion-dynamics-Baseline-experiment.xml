@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE experiments SYSTEM "behaviorspace.dtd">
+<experiments>
+  <experiment name="Baseline" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <exitCondition>ticks = 300</exitCondition>
+    <metric>avg-trust</metric>
+    <metric>avg-surveillance</metric>
+    <metric>avg-inclusion</metric>
+    <metric>avg-net-density</metric>
+    <metric>links-formed-this-tick</metric>
+    <metric>links-broken-this-tick</metric>
+    <metric>count turtles with [opinion-trust &lt; 0.3]</metric>
+    <metric>count turtles with [count link-neighbors = 0]</metric>
+    <enumeratedValueSet variable="mem-increment">
+      <value value="0.04"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="corruption?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="trust-gap-break">
+      <value value="0.009"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="corruption-cycle-trust">
+      <value value="0.15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="opinion-drift?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="corruption-penalty">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="media-shock-trust">
+      <value value="0.3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="corruption-active?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="opinion-similarity">
+      <value value="0.2"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="media-shock?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="trust-gap-form">
+      <value value="0.4"/>
+    </enumeratedValueSet>
+  </experiment>
+</experiments>
