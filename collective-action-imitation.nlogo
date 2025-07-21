@@ -1,37 +1,40 @@
 extensions [nw]
+
 globals [
+  ; Population tracking
   total-enrolled
   total-resisted
   total-undecided
-  enrolled-urban
-  enrolled-rural
-  resisted-urban
-  resisted-rural
-  undecided-urban
-  undecided-rural
-  total-urban
-  total-rural
+
+  ; Cascade detection
+  cascade-size-this-tick
+
+  ; Institutional response
+  institutional-credibility
 ]
 
 turtles-own [
-  trust-level
-  surveillance-sensitivity
-  inclusion-score
-  memory-score              ; Cumulative perceived exclusion or negative experience
-  resistance-threshold
-  digital-literacy          ; 0 (illiterate) or 1 (literate)
-  region                    ; "urban" or "rural"
-  action-state              ; "undecided", "enrolled", "resisted"
+  ; Core opinion (aggregate of trust, surveillance concern, inclusion benefit)
+  opinion-score           ; 0-1, higher = more favorable to system
+
+  ; Demographics for clustering
+  socioeconomic-status    ; "low", "medium", "high" - affects initial opinions and network
+  memory-of-exclusion     ; 0-1, accumulated negative experiences
+
+  ; Action state
+  action-state           ; "undecided", "enrolled", "resisted"
+
+  ; Social influence
+  peer-influence         ; current social proof from neighbors
 ]
 
 to setup
   clear-all
   reset-globals
-  create-agents
-  seed-early-adopters
-  setup-network
-  apply-policy-scenarios
-  update-counts
+  create-population
+  setup-clustered-network
+  seed-early-actors
+  update-metrics
   reset-ticks
 end
 
@@ -39,219 +42,243 @@ to reset-globals
   set total-enrolled 0
   set total-resisted 0
   set total-undecided 0
-  set total-urban 0
-  set total-rural 0
+  set cascade-size-this-tick 0
+  set institutional-credibility 1.0
 end
 
-to create-agents
-  create-turtles 1000 [
-    setxy random-xcor random-ycor
-    set region one-of ["urban" "rural"]
-    if region = "rural" [
-      set digital-literacy ifelse-value (random-float 1.0 < rural-literacy-rate) [1] [0]
-    ]
-    if region = "urban" [
-      set digital-literacy one-of [0 1]
-    ]
-    set memory-score 0  ;; initialize before use
-    set-resistance-threshold
-    set trust-level max list (1 - memory-score + random-float 0.2) 0.0
-    set surveillance-sensitivity random-float 1.0
-    set inclusion-score random-float 1.0
+to create-population
+  create-turtles population-size [
+    ; Assign socioeconomic status (creates natural clustering)
+    let rand random-float 1.0
+    set socioeconomic-status (
+      ifelse-value
+      rand < 0.4 ["low"]
+      rand < 0.8 ["medium"]
+      ["high"]
+    )
+
+    ; Memory of exclusion varies by SES (low SES more excluded historically)
+    set memory-of-exclusion (
+      ifelse-value
+      socioeconomic-status = "low" [0.3 + random-normal 0 0.15]
+      socioeconomic-status = "medium" [0.1 + random-normal 0 0.1]
+      [0.05 + random-normal 0 0.08]
+    )
+    set memory-of-exclusion max list 0 min list 1 memory-of-exclusion
+
+    ; Opinion score: higher SES more favorable, but moderated by memory
+    let base-opinion (
+      ifelse-value
+      socioeconomic-status = "low" [0.3]
+      socioeconomic-status = "medium" [0.5]
+      [0.7]
+    )
+    set opinion-score base-opinion - (memory-of-exclusion * 0.4) + random-normal 0 opinion-variance
+    set opinion-score max list 0 min list 1 opinion-score
+
     set action-state "undecided"
-    if region = "urban" [ set total-urban total-urban + 1 ]
-    if region = "rural" [ set total-rural total-rural + 1 ]
+    set peer-influence 0
+
+    setxy random-xcor random-ycor
   ]
 end
 
-to set-resistance-threshold
-  if region = "rural" and digital-literacy = 0 [
-    set resistance-threshold 0.3 + random-float 0.4
-    set memory-score 0.6 + random-float 0.2
+to setup-clustered-network
+  ; Create network with socioeconomic clustering
+  ask turtles [
+    ; Base random connections
+    let num-random min list 3 (count other turtles)
+    if num-random > 0 [
+      create-links-with n-of num-random other turtles
+    ]
+
+    ; Additional clustering by SES
+    let same-ses other turtles with [socioeconomic-status = [socioeconomic-status] of myself]
+    let num-clustered round (count same-ses * ses-clustering * 0.05)
+    if num-clustered > 0 and count same-ses > 0 [
+      create-links-with n-of (min list num-clustered count same-ses) same-ses
+    ]
   ]
-  if region = "urban" and digital-literacy = 1 [
-    set resistance-threshold 0.5 + random-float 0.3
-    set memory-score random-float 0.2
-  ]
-  if region = "rural" and digital-literacy = 1 [
-    set resistance-threshold 0.4 + random-float 0.3
-    set memory-score 0.1 + random-float 0.4
-  ]
-  if region = "urban" and digital-literacy = 0 [
-    set resistance-threshold 0.2 + random-float 0.4
-    set memory-score random-float 0.4
+
+  ; Ensure no isolates
+  ask turtles with [count link-neighbors = 0] [
+    if count other turtles > 0 [
+      create-link-with one-of other turtles
+    ]
   ]
 end
 
-to seed-early-adopters
-  ask n-of initial-enrolled turtles [ set action-state "enrolled" ]
-  ask n-of initial-resisted turtles with [action-state = "undecided"] [
-    set action-state "resisted"
+to seed-early-actors
+  ; Early adopters: highest opinion scores
+  let num-adopters round (count turtles * 0.05)
+  if num-adopters > 0 [
+    ask max-n-of num-adopters turtles [opinion-score] [
+      set action-state "enrolled"
+    ]
   ]
-end
 
-to setup-network
-  nw:generate-small-world turtles links 10 2 0.1 true
-end
-
-to apply-policy-scenarios
-  if corruption? [
-    ask turtles with [region = "rural" and digital-literacy = 0] [
-      set trust-level max list (trust-level - corruption-penalty) 0
-      set inclusion-score max list (inclusion-score - (corruption-penalty / 2)) 0
+  ; Early resisters: lowest opinion scores + high memory of exclusion
+  let num-resisters round (count turtles * 0.03)
+  if num-resisters > 0 [
+    ask min-n-of num-resisters turtles with [action-state = "undecided"]
+        [opinion-score - memory-of-exclusion] [
+      set action-state "resisted"
     ]
   ]
 end
 
 to go
-  apply-media-shock
-  apply-time-effects
-  update-attitudes
-  update-decisions
-  update-counts
+  set cascade-size-this-tick 0
+
+  update-peer-influence
+  update-actions
+  update-network-ties
+  update-institutional-response
+
+  update-metrics
   color-agents
-  show-network-links
   tick
 end
 
-to apply-media-shock
-  if media-shock? and ticks mod media-shock-freq = 0 [
-    ask turtles [
-      set trust-level max list (trust-level - 0.1) 0
+to update-peer-influence
+  ask turtles [
+    let myneighbors link-neighbors
+    if count myneighbors > 0 [
+      let enrolled-neighbors count myneighbors with [action-state = "enrolled"]
+      let resisted-neighbors count myneighbors with [action-state = "resisted"]
+      let total-neighbors count myneighbors
+
+      ; Peer influence is difference between enrollment and resistance pressure
+      set peer-influence (enrolled-neighbors - resisted-neighbors) / total-neighbors
     ]
   ]
 end
 
-to apply-time-effects
-  if ticks mod trust-erosion = 0 [
-    ask turtles [
-      set trust-level max list (trust-level - 0.01) 0
-      set surveillance-sensitivity min list (surveillance-sensitivity + 0.005) 1.0
-    ]
-  ]
-end
-
-to update-decisions
+to update-actions
   ask turtles with [action-state = "undecided"] [
-    let my-neighbours link-neighbors
-    let enrolled-count count my-neighbours with [action-state = "enrolled"]
-    let resisted-count count my-neighbours with [action-state = "resisted"]
-    let total-neighbors count my-neighbours
+    ; Combined influence: personal opinion + peer pressure + policy pressure
+    let total-influence opinion-score + (peer-influence * 0.5) + (policy-type * 0.3 * institutional-credibility)
 
-    if total-neighbors = 0 [
-      consider-standalone-decision
-      stop
-    ]
+    ; Resistance influence: memory of exclusion + negative peer influence + policy backlash
+    let resistance-influence memory-of-exclusion - (peer-influence * 0.5) + (policy-type * 0.4)
 
-    let exposure-enroll enrolled-count / total-neighbors
-    let exposure-resist resisted-count / total-neighbors
-
-    let resistance-score (exposure-resist * 0.4) +
-                         ((1 - trust-level) * 0.2) +
-                         (surveillance-sensitivity * 0.2) +
-                         ((1 - inclusion-score) * 0.2)
-    let enrollment-score (exposure-enroll * 0.6) +
-                         (inclusion-score * 0.2) +
-                         (trust-level * 0.2)
-
-    if digital-literacy = 0 and region = "rural" [
-      set enrollment-score enrollment-score + (coercion-level * 0.4)
-      set resistance-score resistance-score - 0.1
-    ]
-    if digital-literacy = 1 and region = "urban" [
-      set resistance-score resistance-score + 0.1
-    ]
-
-    if force-enrollment? and trust-level > 0.6 and not appeals-process? [
+    ; Decision thresholds
+    if total-influence > (1 - social-threshold) [
       set action-state "enrolled"
-      stop
+      set cascade-size-this-tick cascade-size-this-tick + 1
     ]
 
-    if resistance-score > resistance-threshold and exposure-resist > 0.1 [
+    if resistance-influence > (1 - social-threshold) [
       set action-state "resisted"
-    ] if action-state = "undecided" and enrollment-score > 0.4 [
-      set action-state "enrolled"
+      set cascade-size-this-tick cascade-size-this-tick + 1
     ]
   ]
-end
 
-to consider-standalone-decision
-  let negative-factors 0
-  if trust-level < 0.2 [ set negative-factors negative-factors + 1 ]
-  if surveillance-sensitivity > 0.8 [ set negative-factors negative-factors + 1 ]
-  if inclusion-score < 0.3 [ set negative-factors negative-factors + 1 ]
-  if negative-factors >= 2 [ set action-state "resisted" ]
-end
-
-to update-attitudes
-  ask turtles with [action-state = "undecided"] [
-    let my-neighbours link-neighbors
-    let enrolled-count count my-neighbours with [action-state = "enrolled"]
-    let resisted-count count my-neighbours with [action-state = "resisted"]
-    let total-neighbors count my-neighbours
-
-    if total-neighbors > 0 [
-      let exposure-enroll enrolled-count / total-neighbors
-      let exposure-resist resisted-count / total-neighbors
-
-      if exposure-resist > 0.3 [
-        set trust-level max list (trust-level - 0.01) 0
-        set surveillance-sensitivity min list (surveillance-sensitivity + 0.01) 1.0
-      ]
-      if exposure-enroll > 0.3 [
-        set trust-level min list (trust-level + 0.005) 1.0
-        set inclusion-score min list (inclusion-score + 0.005) 1.0
+  ; Cascade reinforcement
+  if cascade-size-this-tick >= 5 [
+    ask turtles with [action-state != "undecided"] [
+      ; Reinforce recent switchers
+      if action-state = "enrolled" [
+        set opinion-score min list 1 (opinion-score + 0.05)
       ]
     ]
   ]
 end
 
-to update-counts
+to update-network-ties
+  ; Dynamic rewiring: break ties with those who chose differently
+  ask links [
+    let agent1 end1
+    let agent2 end2
+
+    ; Higher probability of breaking ties if different actions AND different SES
+    if [action-state] of agent1 != "undecided" and
+       [action-state] of agent2 != "undecided" and
+       [action-state] of agent1 != [action-state] of agent2 [
+
+      let break-probability 0.1
+      if [socioeconomic-status] of agent1 != [socioeconomic-status] of agent2 [
+        set break-probability 0.2
+      ]
+
+      if random-float 1.0 < break-probability [
+        die
+      ]
+    ]
+  ]
+
+  ; Form new ties with similar others (every 5 ticks to avoid computational overhead)
+  if ticks mod 5 = 0 [
+    ask turtles with [action-state != "undecided" and count link-neighbors < 12] [
+      let similar-agents other turtles with [
+        action-state = [action-state] of myself and
+        distance myself < 15
+      ]
+      if count similar-agents > 0 [
+        let new-partner one-of similar-agents with [count link-neighbors < 12]
+        if new-partner != nobody and not link-neighbor? new-partner [
+          create-link-with new-partner
+        ]
+      ]
+    ]
+  ]
+end
+
+to update-institutional-response
+  let resistance-rate total-resisted / count turtles
+
+  ; Only update if we have agents (avoid division by zero)
+  if count turtles > 0 [
+    ; Institutional credibility drops if resistance too high
+    if resistance-rate > inst-response-threshold [
+      set institutional-credibility max list 0.3 (institutional-credibility - 0.05)
+    ]
+
+    ; Gradual recovery when resistance is low
+    if resistance-rate < (inst-response-threshold * 0.7) [
+      set institutional-credibility min list 1.0 (institutional-credibility + 0.01)
+    ]
+  ]
+end
+
+to update-metrics
   set total-enrolled count turtles with [action-state = "enrolled"]
   set total-resisted count turtles with [action-state = "resisted"]
   set total-undecided count turtles with [action-state = "undecided"]
-  set enrolled-urban count turtles with [action-state = "enrolled" and region = "urban"]
-  set enrolled-rural count turtles with [action-state = "enrolled" and region = "rural"]
-  set resisted-urban count turtles with [action-state = "resisted" and region = "urban"]
-  set resisted-rural count turtles with [action-state = "resisted" and region = "rural"]
-  set undecided-urban count turtles with [action-state = "undecided" and region = "urban"]
-  set undecided-rural count turtles with [action-state = "undecided" and region = "rural"]
 end
 
 to color-agents
   ask turtles [
-    set color gray
     if action-state = "enrolled" [ set color green ]
     if action-state = "resisted" [ set color red ]
+    if action-state = "undecided" [
+      ; Color undecided by SES for clustering visualization
+      if socioeconomic-status = "low" [ set color gray - 2 ]
+      if socioeconomic-status = "medium" [ set color gray ]
+      if socioeconomic-status = "high" [ set color gray + 2 ]
+    ]
+
+    ; Highlight cascade participants
+    if cascade-size-this-tick >= 5 [ set size 1.3 ]
+    if cascade-size-this-tick < 5 [ set size 1.0 ]
   ]
 end
 
-to show-network-links
-  ask links [ set color blue set thickness 0.2 ]
+; Reporters
+to-report enrollment-rate
+  report total-enrolled / count turtles
 end
 
-to-report avg-trust
-  ifelse any? turtles [
-    report mean [trust-level] of turtles
-  ] [
-    report 0
-  ]
+to-report compute-resistance-rate
+  report total-resisted / count turtles
 end
 
-to-report avg-digital-literacy
-  ifelse any? turtles [
-    report mean [digital-literacy] of turtles
-  ] [
-    report 0
-  ]
+to-report cascade-size
+  report cascade-size-this-tick
 end
 
-to-report avg-rural-literacy
-  ifelse any? turtles with [region = "rural"] [
-    report mean [digital-literacy] of turtles with [region = "rural"]
-  ] [
-    report 0
-  ]
+to-report average-opinion
+  report mean [opinion-score] of turtles
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -281,115 +308,11 @@ GRAPHICS-WINDOW
 ticks
 30.0
 
-SWITCH
-9
-10
-164
-43
-force-enrollment?
-force-enrollment?
-1
-1
--1000
-
-SWITCH
-7
-48
-125
-81
-corruption?
-corruption?
-0
-1
--1000
-
-SWITCH
-7
-86
-159
-119
-appeals-process?
-appeals-process?
-1
-1
--1000
-
-SWITCH
-6
-121
-138
-154
-media-shock?
-media-shock?
-1
-1
--1000
-
-SLIDER
-7
-251
-179
-284
-coercion-level
-coercion-level
-0
-1
-1.0
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-8
-287
-180
-320
-corruption-penalty
-corruption-penalty
-0
-1
-0.0
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-8
-324
-180
-357
-initial-enrolled
-initial-enrolled
-0
-1000
-300.0
-50
-1
-NIL
-HORIZONTAL
-
-SLIDER
-9
-362
-181
-395
-initial-resisted
-initial-resisted
-0
-1000
-100.0
-50
-1
-NIL
-HORIZONTAL
-
 BUTTON
 5
-156
+5
 68
-189
+38
 NIL
 setup
 NIL
@@ -403,10 +326,10 @@ NIL
 1
 
 BUTTON
-73
-156
-136
-189
+76
+5
+139
+38
 NIL
 go
 T
@@ -419,225 +342,228 @@ NIL
 NIL
 1
 
-BUTTON
-5
-191
-162
-224
-NIL
-apply-policy-scenarios
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
-
-PLOT
-9
-399
-209
-549
-Enrollment vs Resistance
-Time
-Population Count
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"enrolled" 1.0 0 -13840069 true "" "set-current-plot \"Enrollment vs Resistance\"\nset-current-plot-pen \"enrolled\"\nplot total-enrolled"
-"resisted" 1.0 0 -2674135 true "" "set-current-plot-pen \"resisted\"\nplot total-resisted"
-"undecided" 1.0 0 -7500403 true "" "set-current-plot-pen \"undecided\"\nplot total-undecided"
-
 SLIDER
-219
-454
-391
-487
-media-shock-freq
-media-shock-freq
-1
-200
-1.0
-10
+3
+41
+175
+74
+population-size
+population-size
+0
+1000
+950.0
+100
 1
 NIL
 HORIZONTAL
 
 SLIDER
-394
-453
-566
-486
-trust-erosion
-trust-erosion
-1
-200
-50.0
-10
-1
-NIL
-HORIZONTAL
-
-MONITOR
-219
-493
-308
-538
-Enrolled
-total-enrolled
-1
-1
-11
-
-MONITOR
-283
-493
-346
-538
-Resisted
-total-resisted
-1
-1
-11
-
-MONITOR
-343
-492
-415
-537
-Undecided
-total-undecided
-1
-1
-11
-
-PLOT
-657
-8
-857
-158
-Population Action Over Time
-Time
-Count
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"enrolled" 1.0 1 -10899396 true "" "plotxy ticks total-enrolled"
-"resisted" 1.0 0 -2674135 true "" "plotxy ticks total-resisted"
-"undecided" 1.0 0 -8630108 true "" "plotxy ticks total-undecided"
-
-PLOT
-657
-160
-857
-310
-Average Trust and Surveillance Sensitivity
-NIL
-NIL
-0.0
-1.0
-0.0
-1.0
-true
-false
-"" ""
-PENS
-"trust" 1.0 0 -13840069 true "" "plotxy ticks mean [trust-level] of turtles"
-"surveillance" 1.0 0 -13345367 true "" "plotxy ticks mean [surveillance-sensitivity] of turtles"
-
-MONITOR
-218
-540
-276
-585
-E Urban
-enrolled-urban
-1
-1
-11
-
-MONITOR
-218
-588
-275
-633
-E Rural
-enrolled-rural
-1
-1
-11
-
-MONITOR
-285
-538
-344
-583
-R Urban
-resisted-urban
-1
-1
-11
-
-MONITOR
-285
-586
-342
-631
-R Rural
-resisted-rural
-1
-1
-11
-
-MONITOR
-346
-540
-405
-585
-U Urban
-undecided-urban
-1
-1
-11
-
-MONITOR
-346
-588
-403
-633
-U Rural
-undecided-rural
-1
-1
-11
-
-SLIDER
-571
-451
-743
-484
-rural-literacy-rate
-rural-literacy-rate
+4
+82
+176
+115
+policy-type
+policy-type
 0
 1
+1.0
+0.5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+5
+122
+177
+155
+opinion-variance
+opinion-variance
+0.1
+0.4
+0.1
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+5
+162
+177
+195
+ses-clustering
+ses-clustering
+0.2
+0.8
 0.3
 0.1
 1
 NIL
 HORIZONTAL
+
+SLIDER
+5
+203
+177
+236
+social-threshold
+social-threshold
+0.1
+0.5
+0.5
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+5
+244
+194
+277
+inst-response-threshold
+inst-response-threshold
+0.15
+0.9
+0.9
+0.05
+1
+NIL
+HORIZONTAL
+
+PLOT
+211
+456
+411
+606
+Behaviour
+ticks
+population proportion
+0.0
+100.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"enrolled" 1.0 0 -13345367 true "" "plot (total-enrolled / count turtles)"
+"resisted" 1.0 0 -13840069 true "" "plot (total-resisted / count turtles)"
+"undecided" 1.0 0 -2674135 true "" "plot (total-undecided / count turtles)"
+
+PLOT
+419
+456
+619
+606
+Institutional Credibility
+ticks
+credibility (0-1)
+0.0
+10.0
+0.0
+1.0
+true
+false
+"" "set-current-plot \"Institutional Credibility\"\nplot institutional-credibility"
+PENS
+"default" 1.0 0 -7713188 true "" "plot institutional-credibility"
+
+PLOT
+627
+456
+827
+606
+Size of Cascade
+ticks
+cascade size
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"cascade-size" 1.0 0 -8630108 true "" "plot cascade-size"
+
+PLOT
+835
+456
+1035
+606
+Distribution of Opinion
+ticks
+opinion score(0-1)
+0.0
+10.0
+0.0
+1.0
+true
+false
+"" ";histogram [opinion-score] of turtles"
+PENS
+"Overall" 1.0 0 -16777216 true "" "plot average-opinion"
+"Low SES" 1.0 0 -13791810 true "" "plot mean [opinion-score] of turtles with [socioeconomic-status = \"low\"]"
+"Med SES" 1.0 0 -6917194 true "" "plot mean [opinion-score] of turtles with [socioeconomic-status = \"medium\"]"
+"High SES" 1.0 0 -955883 true "" "plot mean [opinion-score] of turtles with [socioeconomic-status = \"high\"]"
+
+PLOT
+211
+615
+411
+765
+Network Connectivity
+ticks
+count
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"Total Links" 1.0 0 -16777216 true "" "plot count links"
+"Average Networks" 1.0 0 -955883 true "" "plot mean [count link-neighbors] of turtles"
+
+PLOT
+419
+615
+619
+765
+Socioeconomic Distribution
+time
+percentage
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot (count turtles with [socioeconomic-status = \"low\" and action-state = \"enrolled\"]) / (count turtles with [socioeconomic-status = \"low\"]) * 100"
+
+PLOT
+629
+614
+829
+764
+Adoption Rates
+ticks
+rate (01)
+0.0
+1.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"enrollment-rate" 1.0 0 -955883 true "" "plot enrollment-rate"
+"resistance-rate" 1.0 0 -14835848 true "" "plot compute-resistance-rate"
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -986,210 +912,83 @@ NetLogo 6.4.0
 @#$#@#$#@
 @#$#@#$#@
 <experiments>
-  <experiment name="General Analysis CA Baseline" repetitions="5" runMetricsEveryStep="true">
+  <experiment name="GeneralCA" repetitions="1" runMetricsEveryStep="true">
     <setup>setup</setup>
     <go>go</go>
-    <exitCondition>ticks = 300</exitCondition>
-    <metric>total-enrolled</metric>
-    <metric>total-resisted</metric>
-    <metric>total-undecided</metric>
-    <metric>enrolled-urban</metric>
-    <metric>enrolled-rural</metric>
-    <metric>resisted-urban</metric>
-    <metric>resisted-rural</metric>
-    <metric>avg-trust</metric>
-    <metric>avg-digital-literacy</metric>
-    <metric>avg-rural-literacy</metric>
-    <enumeratedValueSet variable="initial-resisted">
-      <value value="100"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="corruption?">
-      <value value="true"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="coercion-level">
+    <exitCondition>ticks = 200</exitCondition>
+    <metric>enrollment-rate</metric>
+    <metric>compute-resistance-rate</metric>
+    <metric>avg-opinion</metric>
+    <metric>cascade-size</metric>
+    <metric>institutional-credibility</metric>
+    <enumeratedValueSet variable="policy-type">
       <value value="0"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="initial-enrolled">
-      <value value="300"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="corruption-penalty">
+      <value value="0.5"/>
       <value value="1"/>
     </enumeratedValueSet>
-    <enumeratedValueSet variable="media-shock-freq">
-      <value value="91"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="trust-erosion">
-      <value value="51"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="force-enrollment?">
-      <value value="true"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="appeals-process?">
-      <value value="true"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="media-shock?">
-      <value value="true"/>
-    </enumeratedValueSet>
-  </experiment>
-  <experiment name="General Analysis CA MediaShock" repetitions="5" runMetricsEveryStep="true">
-    <setup>setup</setup>
-    <go>go</go>
-    <exitCondition>ticks = 300</exitCondition>
-    <metric>total-enrolled</metric>
-    <metric>total-resisted</metric>
-    <metric>total-undecided</metric>
-    <metric>enrolled-urban</metric>
-    <metric>enrolled-rural</metric>
-    <metric>resisted-urban</metric>
-    <metric>resisted-rural</metric>
-    <metric>avg-trust</metric>
-    <metric>avg-digital-literacy</metric>
-    <metric>avg-rural-literacy</metric>
-    <enumeratedValueSet variable="media-shock?">
-      <value value="true"/>
-      <value value="false"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="media-shock-freq">
-      <value value="50"/>
-      <value value="100"/>
-      <value value="200"/>
-    </enumeratedValueSet>
-  </experiment>
-  <experiment name="General Analysis CA ForcedEnrollment" repetitions="5" runMetricsEveryStep="true">
-    <setup>setup</setup>
-    <go>go</go>
-    <exitCondition>ticks = 300</exitCondition>
-    <metric>total-enrolled</metric>
-    <metric>total-resisted</metric>
-    <metric>total-undecided</metric>
-    <metric>enrolled-urban</metric>
-    <metric>enrolled-rural</metric>
-    <metric>resisted-urban</metric>
-    <metric>resisted-rural</metric>
-    <metric>avg-trust</metric>
-    <metric>avg-digital-literacy</metric>
-    <metric>avg-rural-literacy</metric>
-    <enumeratedValueSet variable="force-enrollment?">
-      <value value="true"/>
-      <value value="false"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="appeals-process?">
-      <value value="true"/>
-      <value value="false"/>
-    </enumeratedValueSet>
-  </experiment>
-  <experiment name="General Analysis CA Corruption" repetitions="5" runMetricsEveryStep="true">
-    <setup>setup</setup>
-    <go>go</go>
-    <exitCondition>ticks = 300</exitCondition>
-    <metric>total-enrolled</metric>
-    <metric>total-resisted</metric>
-    <metric>total-undecided</metric>
-    <metric>enrolled-urban</metric>
-    <metric>enrolled-rural</metric>
-    <metric>resisted-urban</metric>
-    <metric>resisted-rural</metric>
-    <metric>avg-trust</metric>
-    <metric>avg-digital-literacy</metric>
-    <metric>avg-rural-literacy</metric>
-    <enumeratedValueSet variable="corruption?">
-      <value value="true"/>
-      <value value="false"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="corruption-penalty">
+    <enumeratedValueSet variable="opinion-variance">
       <value value="0.1"/>
+      <value value="0.2"/>
       <value value="0.3"/>
+      <value value="0.4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="social-threshold">
+      <value value="0.1"/>
+      <value value="0.2"/>
+      <value value="0.3"/>
+      <value value="0.4"/>
       <value value="0.5"/>
     </enumeratedValueSet>
-  </experiment>
-  <experiment name="General Analysis CA Enrollment" repetitions="5" runMetricsEveryStep="true">
-    <setup>setup</setup>
-    <go>go</go>
-    <exitCondition>ticks = 300</exitCondition>
-    <metric>total-enrolled</metric>
-    <metric>total-resisted</metric>
-    <metric>total-undecided</metric>
-    <metric>enrolled-urban</metric>
-    <metric>enrolled-rural</metric>
-    <metric>resisted-urban</metric>
-    <metric>resisted-rural</metric>
-    <metric>avg-trust</metric>
-    <metric>avg-digital-literacy</metric>
-    <metric>avg-rural-literacy</metric>
-    <enumeratedValueSet variable="initial-resisted">
-      <value value="0"/>
-      <value value="25"/>
-      <value value="50"/>
-      <value value="100"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="initial-enrolled">
-      <value value="0"/>
-      <value value="50"/>
-      <value value="100"/>
-      <value value="150"/>
-      <value value="200"/>
-    </enumeratedValueSet>
-  </experiment>
-  <experiment name="General Analysis CA DigitalDivide" repetitions="5" runMetricsEveryStep="true">
-    <setup>setup</setup>
-    <go>go</go>
-    <exitCondition>ticks = 300</exitCondition>
-    <metric>total-enrolled</metric>
-    <metric>total-resisted</metric>
-    <metric>total-undecided</metric>
-    <metric>enrolled-urban</metric>
-    <metric>enrolled-rural</metric>
-    <metric>resisted-urban</metric>
-    <metric>resisted-rural</metric>
-    <metric>avg-trust</metric>
-    <metric>avg-digital-literacy</metric>
-    <metric>avg-rural-literacy</metric>
-    <enumeratedValueSet variable="rural-literacy-rate">
-      <value value="0"/>
-      <value value="0.3"/>
-      <value value="0.6"/>
+    <enumeratedValueSet variable="inst-response-threshold">
+      <value value="0.15"/>
+      <value value="0.45"/>
+      <value value="0.7"/>
       <value value="0.9"/>
-      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="ses-clustering">
+      <value value="0.2"/>
+      <value value="0.4"/>
+      <value value="0.6"/>
+      <value value="0.8"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="population-size">
+      <value value="300"/>
+      <value value="500"/>
+      <value value="700"/>
+      <value value="1000"/>
     </enumeratedValueSet>
   </experiment>
-  <experiment name="General Analysis CA Baseline (copy)" repetitions="5" runMetricsEveryStep="true">
-    <setup>setup</setup>
+  <experiment name="MandatoryScenario" repetitions="5" runMetricsEveryStep="true">
+    <setup>set policy-type 1.0
+setup</setup>
     <go>go</go>
-    <exitCondition>ticks = 300</exitCondition>
-    <metric>total-enrolled</metric>
-    <metric>total-resisted</metric>
-    <metric>avg-trust</metric>
-    <metric>avg-digital-literacy</metric>
-    <metric>avg-rural-literacy</metric>
-    <enumeratedValueSet variable="initial-resisted">
-      <value value="100"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="corruption?">
-      <value value="true"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="coercion-level">
-      <value value="0"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="initial-enrolled">
-      <value value="300"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="corruption-penalty">
+    <exitCondition>ticks = 100</exitCondition>
+    <metric>enrollment-rate</metric>
+    <metric>compute-resistance-rate</metric>
+    <metric>average-opinion</metric>
+    <metric>cascade-size</metric>
+    <enumeratedValueSet variable="policy-type">
       <value value="1"/>
     </enumeratedValueSet>
-    <enumeratedValueSet variable="media-shock-freq">
-      <value value="91"/>
+    <enumeratedValueSet variable="opinion-variance">
+      <value value="0.1"/>
+      <value value="0.2"/>
+      <value value="0.3"/>
+      <value value="0.4"/>
     </enumeratedValueSet>
-    <enumeratedValueSet variable="trust-erosion">
-      <value value="51"/>
+    <enumeratedValueSet variable="social-threshold">
+      <value value="0.1"/>
+      <value value="0.2"/>
+      <value value="0.3"/>
+      <value value="0.4"/>
+      <value value="0.5"/>
     </enumeratedValueSet>
-    <enumeratedValueSet variable="force-enrollment?">
-      <value value="true"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="appeals-process?">
-      <value value="true"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="media-shock?">
-      <value value="true"/>
+    <enumeratedValueSet variable="inst-response-threshold">
+      <value value="0.15"/>
+      <value value="0.3"/>
+      <value value="0.5"/>
+      <value value="0.7"/>
+      <value value="0.9"/>
     </enumeratedValueSet>
   </experiment>
 </experiments>

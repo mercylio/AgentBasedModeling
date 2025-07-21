@@ -1,187 +1,378 @@
 extensions [nw]
 
 globals [
-  media-shock-triggered?
   avg-trust
   avg-surveillance
   avg-inclusion
-  avg-net-density
+  avg-memory
+  avg-connections
+
+  std-trust
+  std-surveillance
+  std-inclusion
+  trust-entropy
+  surveillance-entropy
+  inclusion-entropy
+
   links-formed-this-tick
   links-broken-this-tick
-  total-links-formed
-  total-links-broken
-  avg-links-formed
-  avg-links-broken
+  total-links
+  clustering-coefficient
+
+  institutional-credibility
 ]
 
 turtles-own [
-  opinion-trust
-  opinion-surveillance
-  opinion-inclusion
-  impressionability
-  memory-score
-  region                ; "urban" or "rural"
-  digital-literacy      ; 0 = illiterate, 1 = literate
-  max-links             ; individual max links (varies by agent)
+  opinion-trust        ; 0-1
+  opinion-surveillance ; 0-1
+  opinion-inclusion    ; 0-1
+  memory-score         ; 0-1, accumulated negative experiences
+  vulnerability        ; 0-1, combines socioeconomic/digital literacy factors
+  impressionability    ; 0-1, how easily influenced
 ]
 
 to setup
   clear-all
-  set media-shock-triggered? false
 
-  create-turtles 1000 [
+  create-turtles 500 [
     setxy random-xcor random-ycor
-    set region one-of ["urban" "rural"]
-    set digital-literacy ifelse-value (region = "rural") [0] [one-of [0 1]]
 
-    if digital-literacy = 0 [
-      set impressionability random-float 0.4 + 0.5
-    ]
-    if digital-literacy = 1 [
-      set impressionability random-float 0.3 + 0.2
-    ]
+    ;; Single vulnerability score (0=privileged, 1=highly vulnerable)
+    set vulnerability random-float 1.0
 
-    set opinion-trust random-float 1.0
-    set opinion-surveillance random-float 1.0
-    set opinion-inclusion random-float 1.0
-    set memory-score 0
-    set max-links round (3 + (opinion-trust * 5))  ; ranges roughly 5–15
+    ;; Impressionability inversely related to vulnerability (vulnerable = more skeptical)
+    set impressionability 0.4 - (vulnerability * 0.2)
 
-    set total-links-formed 0
-    set total-links-broken 0
+    ;; Initial memory based on vulnerability so that vulnerable agents start with some negative experience
+    ;set memory-score vulnerability * 0.3
+    set memory-score vulnerability * 0.2 + random-float 0.1  ; smaller initial memory
+
+    ;; Initialize opinions based on vulnerability and policy type
+    let trust-noise (random-float 0.4 - 0.2)
+    let surveillance-noise (random-float 0.4 - 0.2)
+    let inclusion-noise (random-float 0.4 - 0.2)
+
+    let base-trust 0.5 - (vulnerability * 0.3) + (policy-type * 0.15) + trust-noise
+    let base-surveillance 0.4 + (vulnerability * 0.2) - (policy-type * 0.1) + surveillance-noise
+    let base-inclusion 0.5 + (policy-type * 0.2) + inclusion-noise
+
+    set opinion-trust bound-opinion base-trust
+    set opinion-surveillance bound-opinion base-surveillance
+    set opinion-inclusion bound-opinion base-inclusion
+
+    ;; Initial institutional credibility score
+    set institutional-credibility 1
+
   ]
 
-  apply-policy-scenarios
   setup-network
-  update-averages
+  update-globals
   reset-ticks
 end
 
-to apply-policy-scenarios
-  if corruption? [
-    ask turtles with [region = "rural" and digital-literacy = 0] [
-      set opinion-trust opinion-trust - corruption-penalty
-      set opinion-inclusion opinion-inclusion - (corruption-penalty / 2)
-      set opinion-trust max list opinion-trust 0
-      set opinion-inclusion max list opinion-inclusion 0
+to setup-network
+  ;; Create small-world network based on vulnerability similarity
+  ask turtles [
+    let target-connections 2 + random 2  ; 2-4 connections per agent
+
+    ;; Find similar agents (by vulnerability) to connect with
+    let similar-agents other turtles with [
+      abs (vulnerability - [vulnerability] of myself) < 0.4  ; similarity requirement
+    ]
+
+    ;; Connect to most similar available agents
+    let available-partners similar-agents with [count link-neighbors < 4]
+    if count available-partners >= target-connections [
+      let chosen-partners n-of target-connections available-partners
+      ask chosen-partners [
+        if not link-neighbor? myself [
+          create-link-with myself
+        ]
+      ]
     ]
   ]
 end
 
-to setup-network
-  nw:generate-small-world turtles links 10 2 0.1 true
-end
+to go
+  ;; Reset link change counters
+  set links-formed-this-tick 0
+  set links-broken-this-tick 0
 
-to update-opinions
+  ;; 1. Institutional broadcasts (stochastic)
+  if random 100 < broadcast-frequency [
+    apply-institutional-broadcast
+  ]
+
+  ;; 2. Negative shocks (failures, scandals, exclusions)
+  if random 100 < shock-frequency [
+    apply-negative-shock
+  ]
+
+  ;; 3. Peer influence
   ask turtles [
-    let neighbor one-of link-neighbors
-    if neighbor != nobody [
-      let tdiff abs(opinion-trust - [opinion-trust] of neighbor)
-      let sdiff abs(opinion-surveillance - [opinion-surveillance] of neighbor)
-      let idiff abs(opinion-inclusion - [opinion-inclusion] of neighbor)
+    if any? link-neighbors [
+      let peer one-of link-neighbors
+      update-opinion-from-peer peer
 
-      if tdiff < opinion-similarity [
-        set opinion-trust opinion-trust + impressionability * ([opinion-trust] of neighbor - opinion-trust) * (1 - memory-score)
-      ]
-      if sdiff < opinion-similarity [
-        set opinion-surveillance opinion-surveillance + impressionability * ([opinion-surveillance] of neighbor - opinion-surveillance)
-      ]
-      if idiff < opinion-similarity [
-        set opinion-inclusion opinion-inclusion + impressionability * ([opinion-inclusion] of neighbor - opinion-inclusion)
+      ;; Observational learning: learn from peer's bad experiences
+      if observational-learning? and [memory-score] of peer > memory-score [
+        let memory-transfer ([memory-score] of peer - memory-score) * 0.1
+        set memory-score min list 1 (memory-score + memory-transfer)
       ]
     ]
+  ]
+
+  ;; 4. Network evolution every few ticks (to reduce computation)
+  if ticks mod 3 = 0 [
+    update-network
+  ]
+
+  ;; 5. Memory decay over time
+  ask turtles [
+    set memory-score max list 0 (memory-score - memory-decay)
+  ]
+
+  update-globals
+  update-colours
+  tick
+end
+
+to apply-institutional-broadcast
+  ask turtles [
+    ;; Resistance based on memory and vulnerability
+    let resistance memory-score + (vulnerability * 0.2)
+    let receptiveness institutional-credibility * (1 - resistance) * impressionability * broadcast-strength
+
+    ;; Apply signals
+    if trust-signal != 0 [
+      set opinion-trust bound-opinion (opinion-trust + receptiveness * trust-signal)
+    ]
+    if surveillance-signal != 0 [
+      set opinion-surveillance bound-opinion (opinion-surveillance + receptiveness * surveillance-signal)
+    ]
+    if inclusion-signal != 0 [
+      set opinion-inclusion bound-opinion (opinion-inclusion + receptiveness * inclusion-signal)
+    ]
+  ]
+end
+
+to apply-negative-shock
+  ;; Simulate system failures, scandals, exclusions
+  ask turtles [
+    let shock-impact shock-severity * (1 - policy-type * 0.5)  ; worse under mandatory systems
+    let vulnerability-multiplier 1 + vulnerability  ; vulnerable agents hit harder
+
+    ;; Negative shock reduces trust, increases surveillance concern, decreases inclusion belief
+    set opinion-trust bound-opinion (opinion-trust - shock-impact * vulnerability-multiplier * 0.7)
+    set opinion-surveillance bound-opinion (opinion-surveillance + shock-impact * vulnerability-multiplier * 0.5)
+    set opinion-inclusion bound-opinion (opinion-inclusion - shock-impact * vulnerability-multiplier * 0.3)
+
+    ;; Increase memory
+    set memory-score min list 1 (memory-score + shock-impact * vulnerability-multiplier * 0.5)
+  ]
+end
+
+to update-opinion-from-peer [peer]
+  let opinion-dist calculate-opinion-distance self peer
+
+  ;; Bounded confidence: only update if within threshold
+  if opinion-dist <= confidence-threshold [
+    let similarity-weight (1 - opinion-dist) ^ 2  ; squared for stronger similarity effect
+    let memory-resistance memory-score * 0.7  ; stronger memory resistance
+    let influence-strength similarity-weight * impressionability * (1 - memory-resistance) * 0.02  ; reduced from 0.05
+
+    ;; Update each dimension toward peer
+    set opinion-trust bound-opinion (opinion-trust + influence-strength * ([opinion-trust] of peer - opinion-trust))
+    set opinion-surveillance bound-opinion (opinion-surveillance + influence-strength * ([opinion-surveillance] of peer - opinion-surveillance))
+    set opinion-inclusion bound-opinion (opinion-inclusion + influence-strength * ([opinion-inclusion] of peer - opinion-inclusion))
   ]
 end
 
 to update-network
-  ; Reset this tick’s counters
-  set links-formed-this-tick 0
-  set links-broken-this-tick 0
+  ;; Track broken links
+  let initial-links count links
 
+  ;; Break links with agents who are too different
+  ask links [
+    let opinion-dist calculate-opinion-distance end1 end2
+    ;if opinion-dist > confidence-threshold * 1.5 [  ; higher threshold for breaking than forming
+    if opinion-dist > confidence-threshold * 1.2 [  ; higher threshold for breaking than forming
+      die
+      set links-broken-this-tick links-broken-this-tick + 1
+    ]
+  ]
+
+  ;; Form new links with similar agents (limited rate to prevent runaway clustering)
+  ask turtles with [count link-neighbors < 6] [  ; max 6 connections
+    let potential-partners other turtles with [
+      not link-neighbor? myself and
+      ;count link-neighbors < 6 and
+      count link-neighbors < 4 and
+      calculate-opinion-distance myself self <= confidence-threshold and
+      abs (vulnerability - [vulnerability] of myself) < 0.3  ; demographic similarity still matters
+    ]
+
+    if any? potential-partners and random-float 1 < 0.1 [  ; 30% chance to form new link
+      let new-partner one-of potential-partners
+      create-link-with new-partner
+      set links-formed-this-tick links-formed-this-tick + 1
+    ]
+  ]
+
+  ;; Update link count
+  set total-links count links
+end
+
+to update-colours
   ask turtles [
-    ; PART 1: Break ties if trust difference is too high
+    let trust-val max list 0 (min list 1 opinion-trust)
+    let surveillance-val max list 0 (min list 1 opinion-surveillance)
+    let inclusion-val max list 0 (min list 1 opinion-inclusion)
+    let memory-val max list 0 (min list 1 memory-score)
+    let vulnerability-val max list 0 (min list 1 vulnerability)
+
+    if colour-mode = "trust" [
+      ; Map to range 12-18 (light red to darker red, avoiding black)
+      set color 12 + trust-val * 6
+    ]
+    if colour-mode = "surveillance" [
+      ; Map to range 22-28 (light orange to darker orange)
+      set color 22 + surveillance-val * 6
+    ]
+    if colour-mode = "inclusion" [
+      ; Map to range 52-58 (light green to darker green)
+      set color 52 + inclusion-val * 6
+    ]
+    if colour-mode = "memory" [
+      ; Map to range 2-8 (light gray to darker gray)
+      set color 2 + memory-val * 6
+    ]
+    if colour-mode = "vulnerability" [
+      ; Map to range 102-108 (light blue to darker blue)
+      set color 102 + vulnerability-val * 6
+    ]
+  ]
+end
+
+;; HELPER FUNCTIONS
+
+to-report calculate-opinion-distance [agent1 agent2]
+  let trust-diff abs ([opinion-trust] of agent1 - [opinion-trust] of agent2)
+  let surveillance-diff abs ([opinion-surveillance] of agent1 - [opinion-surveillance] of agent2)
+  let inclusion-diff abs ([opinion-inclusion] of agent1 - [opinion-inclusion] of agent2)
+  report sqrt (trust-diff ^ 2 + surveillance-diff ^ 2 + inclusion-diff ^ 2) / sqrt 3
+end
+
+to-report bound-opinion [value]
+  report max list 0 (min list 1 value)
+end
+
+to update-globals
+  set avg-trust mean [opinion-trust] of turtles
+  set avg-surveillance mean [opinion-surveillance] of turtles
+  set avg-inclusion mean [opinion-inclusion] of turtles
+  set avg-memory mean [memory-score] of turtles
+  set avg-connections mean [count link-neighbors] of turtles
+  set total-links count links
+
+  ;; Calculate standard deviations for polarization
+  set std-trust standard-deviation [opinion-trust] of turtles
+  set std-surveillance standard-deviation [opinion-surveillance] of turtles
+  set std-inclusion standard-deviation [opinion-inclusion] of turtles
+
+  ;; Calculate entropy for polarization (more sophisticated measure)
+  set trust-entropy calculate-entropy [opinion-trust] of turtles
+  set surveillance-entropy calculate-entropy [opinion-surveillance] of turtles
+  set inclusion-entropy calculate-entropy [opinion-inclusion] of turtles
+
+  ;; Calculate clustering coefficient
+  set clustering-coefficient calculate-clustering
+
+  ;; Calculate institutional credibility
+  if avg-trust < 0.3 [
+  set institutional-credibility max list 0 (institutional-credibility - 0.01)
+  ]
+  if avg-trust > 0.5 [
+    set institutional-credibility min list 1 (institutional-credibility + 0.005)
+  ]
+end
+
+to update-colours-old
+  ask turtles [
+    ; Add bounds checking to ensure values are between 0 and 1
+    let trust-val max list 0 (min list 1 opinion-trust)
+    let surveillance-val max list 0 (min list 1 opinion-surveillance)
+    let inclusion-val max list 0 (min list 1 opinion-inclusion)
+    let memory-val max list 0 (min list 1 memory-score)
+    let vulnerability-val max list 0 (min list 1 vulnerability)
+
+    if colour-mode = "trust" [
+      set color scale-color red trust-val 0 1
+    ]
+    if colour-mode = "surveillance" [
+      set color scale-color orange surveillance-val 0 1
+    ]
+    if colour-mode = "inclusion" [
+      set color scale-color green inclusion-val 0 1
+    ]
+    if colour-mode = "memory" [
+      set color scale-color gray memory-val 0 1
+    ]
+    if colour-mode = "vulnerability" [
+      set color scale-color blue vulnerability-val 0 1
+    ]
+  ]
+end
+
+to-report calculate-entropy [opinion-list]
+  ;; Calculate Shannon entropy by binning opinions into 10 bins
+  let bins n-values 10 [0]
+  foreach opinion-list [ op ->
+    let bin-index floor (op * 9.99)  ; ensures we don't get index 10
+    set bins replace-item bin-index bins (item bin-index bins + 1)
+  ]
+
+  let total-count length opinion-list
+  let entropy 0
+  foreach bins [ bin-count ->
+    if bin-count > 0 [
+      let probability bin-count / total-count
+      set entropy entropy - (probability * log probability 2)
+    ]
+  ]
+  report entropy
+end
+
+to-report calculate-clustering
+  ;; Average clustering coefficient across all nodes
+  let total-clustering 0
+  let nodes-with-neighbors 0
+
+  ask turtles with [count link-neighbors >= 2] [
     let my-neighbors link-neighbors
-    if any? my-neighbors [
-      foreach sort my-neighbors [ peer ->
-        if abs(opinion-trust - [opinion-trust] of peer) > trust-gap-break [
-          ask link-with peer [ die ]
-          set links-broken-this-tick links-broken-this-tick + 1
+    let neighbor-count count my-neighbors
+    let possible-edges neighbor-count * (neighbor-count - 1) / 2
+
+    let actual-edges 0
+    ask my-neighbors [
+      ask my-neighbors with [who > [who] of myself] [
+        if link-neighbor? myself [
+          set actual-edges actual-edges + 1
         ]
       ]
     ]
 
-    ; PART 2: Form a new tie if agent has fewer than max-links
-    if count link-neighbors < max-links [
-      let candidate one-of turtles with [
-        self != myself and
-        not link-neighbor? myself and
-        abs(opinion-trust - [opinion-trust] of myself) < trust-gap-form
-      ]
-      if candidate != nobody [
-        create-link-with candidate
-        set links-formed-this-tick links-formed-this-tick + 1
-      ]
+    if possible-edges > 0 [
+      set total-clustering total-clustering + (actual-edges / possible-edges)
+      set nodes-with-neighbors nodes-with-neighbors + 1
     ]
   ]
-end
 
-to media-shock
-  if media-shock? and ticks mod 10 = 0 and not media-shock-triggered? [
-    ask turtles [
-      set opinion-trust opinion-trust - media-shock-trust * (1 - memory-score)
-      set opinion-trust max list opinion-trust 0
-      set memory-score memory-score + mem-increment
-      set memory-score min list memory-score 1
-    ]
-    set media-shock-triggered? true
+  ifelse nodes-with-neighbors > 0 [
+    report total-clustering / nodes-with-neighbors
+  ] [
+    report 0
   ]
-  if ticks mod 10 != 0 [
-    set media-shock-triggered? false
-  ]
-end
-
-to apply-opinion-drift
-  ask turtles [
-    set opinion-trust opinion-trust + (random-float 0.02 - 0.01)
-    set opinion-surveillance opinion-surveillance + (random-float 0.015 - 0.0075)
-    set opinion-inclusion opinion-inclusion + (random-float 0.015 - 0.0075)
-
-    ; Clamp values to [0, 1]
-    set opinion-trust max list 0 (min list 1 opinion-trust)
-    set opinion-surveillance max list 0 (min list 1 opinion-surveillance)
-    set opinion-inclusion max list 0 (min list 1 opinion-inclusion)
-  ]
-end
-
-to apply-corruption-cycle
-  ask turtles with [digital-literacy = 0 or region = "rural"] [
-    ;set opinion-trust opinion-trust - 0.05
-    ;set opinion-trust max list 0 opinion-trust
-
-    ;set memory-score memory-score + 0.02
-    ;set memory-score min list memory-score 1
-
-    set opinion-trust max list 0 (opinion-trust - corruption-cycle-trust)
-    set memory-score min list 1 (memory-score + mem-increment)
-  ]
-end
-
-to update-averages
-  set avg-trust mean [opinion-trust] of turtles
-  set avg-surveillance mean [opinion-surveillance] of turtles
-  set avg-inclusion mean [opinion-inclusion] of turtles
-  set avg-net-density mean [count link-neighbors] of turtles
-end
-
-to go
-  apply-policy-scenarios
-  media-shock
-  if opinion-drift? [ apply-opinion-drift ]
-  if corruption-active? and ticks mod 10 = 0 [ apply-corruption-cycle ]
-  update-opinions
-  update-network
-  update-averages
-  tick
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -211,48 +402,11 @@ GRAPHICS-WINDOW
 ticks
 30.0
 
-SWITCH
-3
-4
-121
-37
-corruption?
-corruption?
-1
-1
--1000
-
-SWITCH
-3
-38
-135
-71
-media-shock?
-media-shock?
-1
-1
--1000
-
-SLIDER
-3
-74
-175
-107
-corruption-penalty
-corruption-penalty
-0
-1
-1.0
-0.1
-1
-NIL
-HORIZONTAL
-
 BUTTON
+4
 2
-110
-65
-143
+67
+35
 NIL
 setup
 NIL
@@ -266,10 +420,10 @@ NIL
 1
 
 BUTTON
-69
-110
-132
-143
+72
+2
+135
+35
 NIL
 go
 T
@@ -282,190 +436,253 @@ NIL
 NIL
 1
 
-PLOT
-3
-146
-203
-296
-Average Trust
-Time
-Trust (0-1)
-0.0
-1.0
-0.0
-1.0
-true
-false
-"" ""
-PENS
-"trust" 1.0 0 -2674135 true "" "set-current-plot \"Average Trust\"\nset-current-plot-pen \"trust\"\nplot avg-trust"
-
-PLOT
-3
-298
-203
-448
-Average Surveillance Perception
-Time
-Surveillance
-0.0
-1.0
-0.0
-1.0
-true
-false
-"" ""
-PENS
-"surveillance" 1.0 0 -1184463 true "" "set-current-plot \"Average Surveillance Perception\"\nset-current-plot-pen \"surveillance\"\nplot avg-surveillance"
-
-PLOT
+SWITCH
 4
-450
-204
-600
-Average Inclusion Score
-Time
-Inclusion
-0.0
-1.0
-0.0
-1.0
-true
-false
-"" ""
-PENS
-"inclusion" 1.0 0 -8630108 true "" "set-current-plot \"Average Inclusion Score\"\nset-current-plot-pen \"inclusion\"\nplot avg-inclusion"
-
-PLOT
-212
-448
-412
-598
-Link Events
-Time
-Count
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"formed" 1.0 0 -13840069 true "" "set-current-plot \"Link Events\"\nset-current-plot-pen \"formed\"\nplot links-formed-this-tick\n"
-"broken" 1.0 0 -2674135 true "" "set-current-plot-pen \"broken\"\nplot links-broken-this-tick"
-
-SWITCH
-125
-3
-282
-36
-corruption-active?
-corruption-active?
-1
-1
--1000
-
-SWITCH
-138
 38
-267
+191
 71
-opinion-drift?
-opinion-drift?
+observational-learning?
+observational-learning?
 1
 1
 -1000
 
 SLIDER
-417
-451
-663
-484
-trust-gap-break
-trust-gap-break
+5
+73
+177
+106
+policy-type
+policy-type
 0
-1
-0.1
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-599
-450
-771
-483
-trust-gap-form
-trust-gap-form
-0
-1
-0.1
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-418
-486
-590
-519
-opinion-similarity
-opinion-similarity
-0
-1
 1.0
+0.0
+0.5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+6
+108
+178
+141
+broadcast-frequency
+broadcast-frequency
+0
+100
+90.0
+10
+1
+NIL
+HORIZONTAL
+
+SLIDER
+6
+144
+178
+177
+broadcast-strength
+broadcast-strength
+0
+0.5
+0.45
 0.1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-600
-484
-847
-517
-mem-increment
-mem-increment
+7
+178
+179
+211
+shock-frequency
+shock-frequency
 0
+20
+10.0
+5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+4
+214
+176
+247
+shock-severity
+shock-severity
+0
+1
+0.2
 0.1
-0.04
+1
+NIL
+HORIZONTAL
+
+SLIDER
+5
+249
+177
+282
+trust-signal
+trust-signal
+-3
+3
+0.3
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+5
+284
+177
+317
+surveillance-signal
+surveillance-signal
+-3
+3
+-0.3
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+3
+319
+175
+352
+inclusion-signal
+inclusion-signal
+-3
+3
+0.15
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+5
+356
+177
+389
+confidence-threshold
+confidence-threshold
+0
+1
+0.2
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+3
+386
+175
+419
+memory-decay
+memory-decay
+0
+0.05
+0.001
 0.01
 1
 NIL
 HORIZONTAL
 
-SLIDER
-418
-522
-590
-555
-media-shock-trust
-media-shock-trust
-0
-0.5
-0.3
-0.1
+CHOOSER
+7
+422
+145
+467
+colour-mode
+colour-mode
+"trust" "surveillance" "inclusion" "memory" "vulnerability"
 1
-NIL
-HORIZONTAL
 
-SLIDER
-600
-522
-772
-555
-corruption-cycle-trust
-corruption-cycle-trust
-0
-0.2
-0.15
-0.05
-1
-NIL
-HORIZONTAL
+PLOT
+4
+473
+204
+623
+Average Opinion
+ticks
+0-1
+0.0
+1.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"trust" 1.0 0 -10899396 true "" "plot avg-trust"
+"surveillance" 1.0 0 -955883 true "" "plot avg-surveillance"
+"inclusion" 1.0 0 -13791810 true "" "plot avg-inclusion"
+
+PLOT
+212
+473
+412
+623
+Networks
+ticks
+0-8
+0.0
+1.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"avg-connections" 1.0 0 -16777216 true "" "plot avg-connections"
+"std-connections" 1.0 0 -7500403 true "" "plot avg-connections"
+
+PLOT
+420
+473
+620
+623
+Average Memory
+ticks
+0-1
+0.0
+1.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"memory" 1.0 0 -16777216 true "" "plot avg-memory"
+
+PLOT
+629
+473
+829
+623
+Polarisation
+ticks
+0-0.5
+0.0
+10.0
+0.0
+0.5
+true
+false
+"" ""
+PENS
+"trust std" 1.0 0 -16777216 true "" "plot standard-deviation [opinion-trust] of turtles"
+"inclusion std" 1.0 0 -1664597 true "" "plot standard-deviation [opinion-inclusion] of turtles"
+"surveillance std" 1.0 0 -13791810 true "" "plot standard-deviation [opinion-surveillance] of turtles"
 
 @#$#@#$#@
 ## WHAT IS IT?
