@@ -1,7 +1,0 @@
-"BehaviorSpace results (NetLogo 6.4.0)","Lists version 2.0"
-"opinion-dynamics.nlogo"
-"MediaShocks"
-"07/17/2025 15:37:53:518 +0100"
-"min-pxcor","max-pxcor","min-pycor","max-pycor"
-"-16","16","-16","16"
-"[reporter]","[run number]","media-shock?","corruption-active?","opinion-drift?","[step]"

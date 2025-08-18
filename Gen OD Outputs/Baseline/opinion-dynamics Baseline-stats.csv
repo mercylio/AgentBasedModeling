@@ -1,7 +1,0 @@
-"BehaviorSpace results (NetLogo 6.4.0)","Stats version 2.0"
-"opinion-dynamics.nlogo"
-"Baseline"
-"07/17/2025 15:37:04:211 +0100"
-"min-pxcor","max-pxcor","min-pycor","max-pycor"
-"-16","16","-16","16"
-"mem-increment","corruption?","trust-gap-break","corruption-cycle-trust","opinion-drift?","corruption-penalty","media-shock-trust","corruption-active?","opinion-similarity","media-shock?","trust-gap-form","[step]","(mean) avg-trust","(std) avg-trust","(mean) avg-surveillance","(std) avg-surveillance","(mean) avg-inclusion","(std) avg-inclusion","(mean) avg-net-density","(std) avg-net-density","(mean) links-formed-this-tick","(std) links-formed-this-tick","(mean) links-broken-this-tick","(std) links-broken-this-tick","(mean) count turtles with [opinion-trust < 0.3]","(std) count turtles with [opinion-trust < 0.3]","(mean) count turtles with [count link-neighbors = 0]","(std) count turtles with [count link-neighbors = 0]"
